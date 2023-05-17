@@ -1,0 +1,142 @@
+---
+title: "Measuring ROI on Sponsored Search ads"
+author: "Ram Gajalakshmi Senthil Nathan (5814908) & Lepakshi Ganta (5807927)"
+date: '2022-11-20'
+output: pdf_document
+fontsize: 12pt
+header-includes:
+   - \usepackage{setspace}
+   - \doublespacing
+geometry: margin=1.35cm
+---
+
+## Background and Experiment:
+
+Bazaar.com is a leading online retailer in the US with extensive advertising presence in both display advertising and search engine advertising running paid search ads on Google and Bing. Bazaar’s paid ads are broadly classified into two main categories by keywords: branded and non-branded. 
+
+Bob, who is from Bazaar’s marketing analytics team, computed a 320% ROI on their sponsored ad spending. The objective is to perform a sanity check on the ROI, using Difference in Difference method.
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+## Question 1    
+Bob's approach is wrong because if someone does a branded search, irrespective of the sponsored ad, they are more likely to visit the site. People who search with the word ‘Bazaar’ already had the intent to visit Bazaar.com. False contribution of the sponsored ads overestimates the ROI which is the problem here.  
+
+## Question 2  
+Each unit is the website for a particular week (panel data). Outcome variables are site traffics. Treated units would be google sites and control units would be bing, ask and yahoo sites.
+
+## Reading data and performing manipulations
+```{r packages}
+library(dplyr)
+library(ggplot2)
+library(plm)
+```
+
+```{r data}
+data <- read.csv('did_sponsored_ads.csv')
+data$tot_traffic = data$avg_spons + data$avg_org
+data = data %>% mutate(treat = ifelse(platform == 'goog', 1, 0)) %>% mutate(after = ifelse(week >= 10, 1, 0))
+```
+
+## Checking distribution of average organic traffic
+```{r message=FALSE, warning=FALSE, fig.align="center",fig.width = 8, fig.height = 4, echo = FALSE, tidy= TRUE}
+hist(data$avg_org)
+hist(log(data$avg_org))
+```
+Data skewness is not severe in this case, but we'll still go ahead with log transformation of the outcome variables (average organic and total traffic).
+
+## Question 3 
+Calculate the first difference
+```{r}
+google <- data %>% filter(treat == 1)
+summary(lm(log(avg_org) ~ after, data = google))
+```  
+Regressing organic traffic on week (after) variable, we can see that on average, the organic traffic increases by 126% when there are no sponsored ads.
+p-value: 0.0164
+
+```{r}
+goog_lm = summary(lm(log(tot_traffic) ~ after, data = google))
+goog_lm
+```  
+Regressing total traffic on week (after) variable, we can see that on average, the total traffic increases by 0.13% when there are no sponsored ads, but the result is not significant. This means that there is no statistical difference in total traffic when we remove sponsored ads.
+p-value: 0.998
+
+## Explanation and concerns regarding first difference method:
+Once ads were stopped, avg organic traffic increases significantly because part of it was earlier included in sponsored traffic. But these results cannot be considered as such because:  
+1. Organization and week level confounds could play a role. Effects of time invariant factors for each site and week can affect the results.  
+2. Additionally, there could be a constant increase in organic traffic from week 1 through week 12 on all sites, which is not factored in the first difference method.
+
+```{r, include= FALSE}
+week_ave <- data %>% group_by(week,treat) %>% summarise(ave_spons = mean(avg_spons),
+                                                       ave_org = mean(avg_org),
+                                                       ave_tot = mean(tot_traffic))
+```
+
+### Parallel trends assumption  
+
+```{r message=FALSE, warning=FALSE, fig.align="center",fig.width = 8, fig.height = 2, echo = FALSE, tidy= TRUE}
+
+ggplot(week_ave, aes(x = week, y = ave_org, color = factor(treat, levels = c(1,0)))) + 
+  geom_line() + 
+  geom_vline(xintercept = 9, linetype='dotted') + 
+  #ylim(0, 6) +
+  xlim(1,13) + 
+  theme_bw()
+
+ggplot(week_ave, aes(x = week, y = ave_tot, color = factor(treat, levels = c(1,0)))) + 
+  geom_line() + 
+  geom_vline(xintercept = 9, linetype='dotted') + 
+  #ylim(0, 6) +
+  xlim(1,13) + 
+  theme_bw()
+```
+
+```{r}
+summary(lm(avg_org ~ treat * factor(week), data = data))
+```
+Parallel trends assumption holds true as the p-values for interaction terms are not significant till week 9, or no difference in average organic sales (and total traffic) for the treatment and control groups
+
+## SUTVA assumption
+SUTVA assumption is not violated here as this is a natural experiment and the treatment was not given systematically. It is unlikely that sites other than Google had a glitch and we wouldn't have known.
+
+## Question 4  
+Calculate the Difference-in-Differences.  
+We are using a fixed effects regression model to account for week and site level confounds
+```{r}
+summary(plm(log(avg_org) ~ treat* after, data = data,
+            model = "within",
+            effect = "twoways",
+            index = c('id', "week")))
+
+(exp(0.228419)- 1)*100
+```
+**Interpretation:** There is approximately a 25% additional increase in average organic traffic of Google compared to the other 3 sites when there are no sponsored ads. p-value: 0.001403 (significant)
+
+
+```{r}
+summary(plm(log(tot_traffic) ~ treat* after, data = data,
+            model = "within",
+            effect = "twoways",
+            index = c('id', "week")))
+
+(exp(-1.116336)- 1)*100
+```
+**Interpretation:** There is approximately a 67% additional decrease in total traffic of Google compared to the other 3 sites when there are no sponsored ads. p-value < 2.2e-16 (significant)
+
+These results in tandum show us that the true contribution of sponsored ads is actually the difference in decrease of total traffic and increase of organic traffic.
+
+## Fixing ROI calculation
+In absolute terms, ROI correction would be easier, so we'll use regular outcome variables with OLS
+```{r, eval = FALSE}
+summary(lm(avg_org ~ treat * after, data = data))
+summary(lm(tot_traffic ~ treat * after, data = data))
+```
+From the above models' interaction terms:  
+The average actual contribution of sponsored ads = 9910  
+The average contribution of sponsored ads from over-effect of organic ads = 2293  
+Over-effect ratio = 2293/(9910+2293) = 0.1879046
+
+Cost = 0.6 * 1 = 0.6 
+Revenue = 0.12 * 21 * (1-over-effect ratio) = 2.04648  
+**Fixed ROI = (Revenue - Cost) / Cost = 2.4 or 240%**
